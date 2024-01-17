@@ -1,0 +1,95 @@
+name: Dump and Push
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  GITHUB_USERNAME: lmao-armv8
+  GITHUB_EMAIL: chaitanya4g9@sasi.ac.in
+  TOKEN: ${{ secrets.GH_TOKEN }}
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - codename: "r0q"
+            ack_branch : "android12-5.10"
+            oem: "https://github.com/LMAO-armv8/kernel_samsung_r0q"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Clean the actions  
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Configuring git
+        run: |
+          git config --global user.name $GITHUB_USERNAME
+          git config --global user.email $GITHUB_EMAIL
+
+      - name: Clone sources
+        run: |
+          echo "Cloning the oem kernel and ack sources"
+          git clone --single-branch -b ${{ matrix.ack_branch }} https://android.googlesource.com/kernel/common.git kernel
+          git clone --depth=1 --single-branch ${{ matrix.oem }} oem
+
+      - name: Setup rebasing
+        run: |
+          echo "Get the OEM Kernel's Version"
+          cd oem
+          OEM_KERNEL_VERSION=$(make kernelversion)
+          cd -
+          
+          echo "Hard Reset ACK to ${OEM_KERNEL_VERSION}"
+          cd kernel
+          OEM_KERNEL_VER_SHORT_SHA=$(git log --oneline ${ACK_BRANCH} Makefile | grep -i ${OEM_KERNEL_VERSION} | grep -i merge | cut -d ' ' -f1)
+          git reset --hard ${OEM_KERNEL_VER_SHORT_SHA}
+          cd -
+
+          # Get the list of Directories of the OEM Kernel
+          cd oem
+          OEM_DIR_LIST=$(find -type d -printf "%P\n" | grep -v / | grep -v .git)
+          cd -
+          
+      - name: Start Rebasing
+        run: |
+          cd kernel
+          for i in ${OEM_DIR_LIST}; do
+	          rm -rf ${i}
+          done
+
+          cd -
+          cp -r oem/* kernel/
+          cd kernel
+
+          for i in ${OEM_DIR_LIST}; do
+	          git add ${i}
+	          git commit -s -m "${i}: Import OEM Changes"
+          done
+
+          git add .
+          git commit -s -m "Import Remaining OEM Changes"
+          cd -
+
+          echo "Your Kernel has been successfully rebased to ACK. Please check kernel/"
+
+      - name: Pushing the kernel
+        run: |
+          cd kernel
+          git branch -m rebase
+          git remote remove origin
+          git remote add origin ${{ matrix.oem }}
+          for rev in $(git rev-list --reverse origin/rebase..rebase); do git push -f https://${GH_TOKEN}@github.com/${echo "${{ matrix.oem }}" | sed -n 's|^https://github.com/\(.*\)$|\1|p'} $rev:rebase; done
+          cd -
+
+      - name: Cleaning the area
+        run: |
+          rm -rf *
